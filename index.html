@@ -138,7 +138,7 @@
         if(!studyCoords) return alert("Please draw a study area!");
         document.getElementById('status').innerText = "⏳ Fetching GEE Data...";
 
-        fetch("http://127.0.0.1:8000/get-indices", {
+        fetch("https://urban-climate-engine.onrender.com/get-indices", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
