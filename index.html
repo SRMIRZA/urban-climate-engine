@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Urban Climate Engine</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-draw/dist/leaflet.draw.css"/>
+
+    <style>
+        body { margin: 0; font-family: 'Segoe UI', sans-serif; background: #f4f7f6; }
+        #map { height: 100vh; width: 100%; }
+        
+        /* Control Panel Styles */
+        .control-panel {
+            position: absolute; top: 20px; left: 70px; z-index: 1000;
+            background: white; padding: 20px; border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.2); width: 260px;
+        }
+        .input-group { margin-bottom: 12px; }
+        label { display: block; font-size: 12px; font-weight: bold; color: #444; margin-bottom: 5px; }
+        input[type="date"], input[type="range"] { width: 100%; box-sizing: border-box; }
+
+        .slider-container { background: #f9f9f9; padding: 10px; border-radius: 6px; margin-top: 10px; border: 1px solid #eee; }
+        .slider-label { display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 5px; }
+
+        button { width: 100%; padding: 12px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; margin-top: 10px; }
+        .btn-indices { background: #27ae60; color: white; }
+        .btn-heat { background: #e74c3c; color: white; }
+        #status { font-size: 11px; margin-top: 12px; color: #7f8c8d; text-align: center; }
+
+        /* Legend Styles */
+        .legend {
+            background: white; padding: 12px; line-height: 18px; color: #333;
+            border-radius: 8px; box-shadow: 0 0 15px rgba(0,0,0,0.2);
+            position: absolute; bottom: 30px; right: 20px; z-index: 1000;
+            display: none; width: 200px;
+        }
+        .legend i {
+            width: 100%; height: 12px; float: left; margin-top: 8px;
+            border-radius: 3px; border: 1px solid #ddd;
+        }
+        .legend-labels {
+            display: flex; justify-content: space-between;
+            font-size: 10px; font-weight: bold; margin-top: 8px;
+        }
+    </style>
+</head>
+<body>
+
+<div class="control-panel">
+    <div style="font-size: 18px; margin-bottom: 15px; color: #2c3e50;">🌍 <b>Urban Climate Engine</b></div>
+    
+    <div class="input-group">
+        <label>Date Range:</label>
+        <input type="date" id="startDate" value="2024-03-01">
+        <input type="date" id="endDate" value="2024-06-01" style="margin-top:5px;">
+    </div>
+
+    <div class="slider-container">
+        <div class="slider-label">
+            <span>Transparency</span>
+            <span id="opacityVal">70%</span>
+        </div>
+        <input type="range" id="opacitySlider" min="0" max="100" value="70" oninput="updateOpacity(this.value)">
+    </div>
+
+    <button class="btn-indices" onclick="generateData()">Generate Indices</button>
+    <button class="btn-heat" onclick="window.open('analysis.html', '_blank')">Heat Transfer →</button>
+    
+    <div id="status">Draw an area to begin</div>
+</div>
+
+<div id="map"></div>
+
+<div id="map-legend" class="legend">
+    <div id="legend-title" style="font-weight:bold; font-size:13px;">Index Scale</div>
+    <i id="legend-bar"></i>
+    <div class="legend-labels">
+        <span id="legend-min">Low</span>
+        <span id="legend-max">High</span>
+    </div>
+</div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-draw/dist/leaflet.draw.js"></script>
+
+<script>
+    var map = L.map('map').setView([21.1458, 79.0882], 13);
+    
+    var googleHybrid = L.tileLayer('http://{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', {
+        maxZoom: 20, subdomains:['mt0','mt1','mt2','mt3'], attribution: '© Google Maps'
+    }).addTo(map);
+
+    var drawnItems = new L.FeatureGroup().addTo(map);
+    var drawControl = new L.Control.Draw({
+        draw: { polygon: true, rectangle: true, polyline: false, circle: false, marker: false },
+        edit: { featureGroup: drawnItems }
+    }).addTo(map);
+
+    var studyCoords = null;
+    var currentLayers = []; 
+    var layerControl = null;
+
+    // Define Standard Scales
+    const palettes = {
+        lst: { title: "LST (°C)", colors: "linear-gradient(to right, blue, cyan, yellow, red, #990000)", min: "25", max: "50" },
+        ndvi: { title: "NDVI (Vegetation)", colors: "linear-gradient(to right, #654321, #f5e79d, #00ff00, #004d00)", min: "0", max: "0.8" },
+        ndbi: { title: "NDBI (Built-up)", colors: "linear-gradient(to right, #ffffff, #cccccc, #ff8c00, #ff0000)", min: "-0.1", max: "0.4" }
+    };
+
+    map.on(L.Draw.Event.CREATED, function (e) {
+        drawnItems.clearLayers();
+        drawnItems.addLayer(e.layer);
+        studyCoords = e.layer.getLatLngs();
+        document.getElementById('status').innerText = "✅ Area selected.";
+    });
+
+    function updateOpacity(val) {
+        document.getElementById('opacityVal').innerText = val + "%";
+        var opacityDecimal = val / 100;
+        currentLayers.forEach(layer => {
+            if (map.hasLayer(layer)) layer.setOpacity(opacityDecimal);
+        });
+    }
+
+    function updateLegend(type) {
+        const p = palettes[type];
+        document.getElementById('map-legend').style.display = 'block';
+        document.getElementById('legend-title').innerText = p.title;
+        document.getElementById('legend-bar').style.background = p.colors;
+        document.getElementById('legend-min').innerText = p.min;
+        document.getElementById('legend-max').innerText = p.max;
+    }
+
+    function generateData() {
+        if(!studyCoords) return alert("Please draw a study area!");
+        document.getElementById('status').innerText = "⏳ Fetching GEE Data...";
+
+        fetch("http://127.0.0.1:8000/get-indices", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                coordinates: studyCoords,
+                start_date: document.getElementById('startDate').value,
+                end_date: document.getElementById('endDate').value
+            })
+        })
+        .then(res => res.json())
+        .then(data => {
+            if(layerControl) map.removeControl(layerControl);
+            currentLayers.forEach(l => map.removeLayer(l));
+            currentLayers = [];
+
+            var opacity = document.getElementById('opacitySlider').value / 100;
+
+            var lst = L.tileLayer(data.lst_url, { opacity: opacity });
+            var ndvi = L.tileLayer(data.ndvi_url, { opacity: opacity });
+            var ndbi = L.tileLayer(data.ndbi_url, { opacity: opacity });
+
+            currentLayers = [lst, ndvi, ndbi];
+
+            // Update legend when user clicks radio buttons in layer control
+            map.on('overlayadd', function(e) {
+                if (e.name.includes("LST")) updateLegend('lst');
+                if (e.name.includes("NDVI")) updateLegend('ndvi');
+                if (e.name.includes("NDBI")) updateLegend('ndbi');
+            });
+
+            layerControl = L.control.layers(null, {
+                "🔥 Land Surface Temp": lst,
+                "🌿 Vegetation (NDVI)": ndvi,
+                "🏗️ Built-up (NDBI)": ndbi
+            }, { collapsed: false }).addTo(map);
+
+            lst.addTo(map); 
+            updateLegend('lst'); 
+            document.getElementById('status').innerText = "✅ Map Updated";
+        })
+        .catch(err => {
+            document.getElementById('status').innerText = "❌ Error fetching data";
+        });
+    }
+</script>
+</body>
+</html>
