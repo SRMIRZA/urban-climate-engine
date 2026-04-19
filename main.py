@@ -2,11 +2,13 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import ee
+import os
+import json
 
 app = FastAPI()
 
 # -------------------------------
-# CORS CONFIGURATION
+# CORS SETTINGS (Crucial for Web)
 # -------------------------------
 app.add_middleware(
     CORSMiddleware,
@@ -19,12 +21,25 @@ app.add_middleware(
 # -------------------------------
 # EARTH ENGINE INITIALIZATION
 # -------------------------------
-try:
-    # Use your specific project ID
-    ee.Initialize(project="uhi-research")
-    print("✅ Earth Engine initialized successfully")
-except Exception as e:
-    print(f"❌ EE init failed: {e}")
+def initialize_ee():
+    try:
+        # Check if we are running on Render (GEE_JSON exists)
+        gee_json = os.getenv("GEE_JSON")
+        
+        if gee_json:
+            print("Running in Cloud mode...")
+            info = json.loads(gee_json)
+            credentials = ee.ServiceAccountCredentials(info['client_email'], key_data=gee_json)
+            ee.Initialize(credentials, project="uhi-research")
+        else:
+            print("Running in Local mode...")
+            ee.Initialize(project="uhi-research")
+            
+        print("✅ Earth Engine initialized successfully")
+    except Exception as e:
+        print(f"❌ EE init failed: {e}")
+
+initialize_ee()
 
 # -------------------------------
 # DATA MODELS
@@ -38,15 +53,15 @@ class AnalysisRequest(BaseModel):
 # ROUTES
 # -------------------------------
 @app.get("/")
-def read_root():
-    return {"status": "Microclimate Backend Running"}
+def root():
+    return {"message": "Microclimate Engine Backend Active"}
 
 @app.post("/get-indices")
 def get_indices(data: AnalysisRequest):
     try:
-        # 1. Format Coordinates for GEE (Leaflet returns nested arrays)
+        # 1. Format Coordinates for GEE
+        # Leaflet Draw nested array handling
         raw_coords = data.coordinates[0]
-        # Handle different Leaflet Draw nesting levels
         if isinstance(raw_coords[0], list):
             path = raw_coords[0]
         else:
@@ -54,7 +69,7 @@ def get_indices(data: AnalysisRequest):
             
         ee_coords = [[float(p["lng"]), float(p["lat"])] for p in path]
         
-        # Ensure polygon is closed for GEE
+        # Ensure polygon is closed
         if ee_coords[0] != ee_coords[-1]:
             ee_coords.append(ee_coords[0])
             
@@ -72,9 +87,8 @@ def get_indices(data: AnalysisRequest):
         if not image:
             raise HTTPException(status_code=404, detail="No clear imagery found for selected dates.")
 
-        # --- PHYSICS CALCULATIONS ---
-        
-        # A. LST (Land Surface Temp) - Scale factors for C2 L2
+        # --- CALCULATIONS ---
+        # A. LST (Celsius)
         lst = (image.select("ST_B10")
                .multiply(0.00341802)
                .add(149.0)
@@ -84,13 +98,13 @@ def get_indices(data: AnalysisRequest):
         # B. NDVI (Vegetation)
         ndvi = image.normalizedDifference(['SR_B5', 'SR_B4']).clip(region)
 
-        # C. NDBI (Built-Up/Buildings)
+        # C. NDBI (Built-Up)
         ndbi = image.normalizedDifference(['SR_B6', 'SR_B5']).clip(region)
 
-        # --- VISUALIZATION PARAMS ---
-        vis_lst = {"min": 25, "max": 50, "palette": ["0000ff", "00ffff", "ffff00", "ff0000"]}
-        vis_ndvi = {"min": 0, "max": 0.6, "palette": ["#ece2f0", "#a6bddb", "#1c9099", "#016c59"]}
-        vis_ndbi = {"min": -0.1, "max": 0.4, "palette": ["#ffffff", "#f0f0f0", "#636363", "#000000"]}
+        # --- VISUALIZATION PALETTES ---
+        vis_lst = {"min": 25, "max": 50, "palette": ["0000ff", "00ffff", "ffff00", "ff0000", "990000"]}
+        vis_ndvi = {"min": 0, "max": 0.8, "palette": ["#654321", "#f5e79d", "#00ff00", "#008000", "#004d00"]}
+        vis_ndbi = {"min": -0.1, "max": 0.4, "palette": ["#ffffff", "#cccccc", "#ff8c00", "#ff0000"]}
 
         return {
             "lst_url": lst.getMapId(vis_lst)["tile_fetcher"].url_format,
@@ -105,7 +119,3 @@ def get_indices(data: AnalysisRequest):
     except Exception as e:
         print(f"Server Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
